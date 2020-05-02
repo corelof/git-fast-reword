@@ -16,12 +16,12 @@ const (
 	newCommitMessage   = "new_commit"
 	initRepoScriptsDir = "init_repo"
 	branchName         = "Fast_Reword_Branch"
-	testCases          = 4
+	testCases          = 1
 	outputHashSize     = 40
 )
 
 func interactiveRebaseReword(repoRoot string, commitHash string, newMessage string) error {
-	// TODO
+	//TODO
 	return nil
 }
 
@@ -59,6 +59,12 @@ func TestMain(t *testing.T) {
 				)
 			}
 
+			g, err := buildCommitGraph(interactiveDir)
+			if err != nil {
+				t.Error(err)
+			}
+			g.Reword(params1)
+
 			if err := bruteReword(interactiveDir, params1); err != nil {
 				t.Error(err)
 			}
@@ -66,13 +72,13 @@ func TestMain(t *testing.T) {
 				t.Error(err)
 			}
 
-			compareRepos(t, interactiveDir, fastDir)
+			compareRepos(t, interactiveDir, fastDir, g)
 		})
 		os.RemoveAll(testDir)
 	}
 }
 
-func compareRepos(t *testing.T, repo1, repo2 string) {
+func compareRepos(t *testing.T, repo1, repo2 string, g *repoGraph) {
 	g1, err := buildCommitGraph(repo1)
 	if err != nil {
 		t.Error(err)
@@ -81,8 +87,11 @@ func compareRepos(t *testing.T, repo1, repo2 string) {
 	if err != nil {
 		t.Error(err)
 	}
-	if !g1.Equal(g2) {
-		t.Fatalf("repo graphs are not equal")
+	if !g1.Equal(g) {
+		t.Errorf("interactive rebased graph is wrong")
+	}
+	if !g2.Equal(g) {
+		t.Errorf("fast reworded graph is wrong")
 	}
 }
 
@@ -150,4 +159,27 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		m2 = append(m2[:fidx], m2[fidx+1:]...)
 	}
 	return len(m2) == 0
+}
+
+func (g *repoGraph) Reword(params []rewordParam) {
+	newMessage := make(map[string]string)
+	for _, v := range params {
+		newMessage[v.hash] = v.message
+	}
+	var dfs func(*commit)
+	dfs = func(c *commit) {
+		if c == nil {
+			return
+		}
+		nm, ok := newMessage[c.id]
+		if ok {
+			c.message = nm
+		}
+		for _, v := range c.parents {
+			dfs(v)
+		}
+	}
+	for _, v := range g.branchHeads {
+		dfs(v)
+	}
 }
