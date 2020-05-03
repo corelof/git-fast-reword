@@ -11,7 +11,6 @@ func buildCommitGraph(repoRoot string) (*repoGraph, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = err
 	it, err := repo.NewBranchIterator(git.BranchLocal)
 	if err != nil {
 		return nil, err
@@ -36,15 +35,16 @@ func buildCommitGraph(repoRoot string) (*repoGraph, error) {
 			return fmt.Errorf("nil commit received")
 		}
 		com, ok := commits[c.Id().String()]
-		if !ok {
-			com = &commit{
-				message:  c.Message(),
-				parents:  make([]*commit, 0),
-				children: make([]*commit, 0),
-				id:       c.Id().String(),
-			}
-			commits[c.Id().String()] = com
+		if ok {
+			return nil
 		}
+		com = &commit{
+			message:  c.Message(),
+			parents:  make([]*commit, 0),
+			children: make([]*commit, 0),
+			id:       c.Id().String(),
+		}
+		commits[c.Id().String()] = com
 		n := c.ParentCount()
 		var i uint
 		for i = 0; i < n; i++ {
