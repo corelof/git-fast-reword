@@ -7,10 +7,12 @@ import (
 	git "github.com/libgit2/git2go/v28"
 )
 
-// TODO improve test corner cases coverage, maybee add randomly generated repositories
-// TODO for example graph with no updates(empty file) or when we change only last(it can drop)
+// TODO add randomly generated repositories
 
 func fastReword(repoRoot string, params []rewordParam) error {
+	if len(params) < 1 {
+		return nil
+	}
 	relinkBranches := func(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 		it, err := repo.NewBranchIterator(git.BranchLocal)
 		if err != nil {
