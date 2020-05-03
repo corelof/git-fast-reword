@@ -6,111 +6,18 @@ import (
 	git "github.com/libgit2/git2go/v28"
 )
 
-func buildCommitGraph(repoRoot string) (*repoGraph, error) {
-	repo, err := git.OpenRepository(repoRoot)
-	if err != nil {
-		return nil, err
-	}
-	it, err := repo.NewBranchIterator(git.BranchLocal)
-	if err != nil {
-		return nil, err
-	}
-	bs := make([]*git.Branch, 0)
-	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
-		if t != git.BranchLocal {
-			return fmt.Errorf("wrong branch type")
-		}
-		bs = append(bs, b)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	res := &repoGraph{branchHeads: make([]*commit, 0)}
-	commits := make(map[string]*commit)
-
-	var dfs func(*git.Commit) error
-	dfs = func(c *git.Commit) error {
-		if c == nil {
-			return fmt.Errorf("nil commit received")
-		}
-		com, ok := commits[c.Id().String()]
-		if ok {
-			return nil
-		}
-		com = &commit{
-			message:  c.Message(),
-			parents:  make([]*commit, 0),
-			children: make([]*commit, 0),
-			id:       c.Id().String(),
-		}
-		commits[c.Id().String()] = com
-		n := c.ParentCount()
-		var i uint
-		for i = 0; i < n; i++ {
-			if err = dfs(c.Parent(i)); err != nil {
-				return err
-			}
-			com.parents = append(com.parents, commits[c.ParentId(i).String()])
-			commits[c.ParentId(i).String()].children = append(commits[c.ParentId(i).String()].children, com)
-		}
-		return nil
-	}
-
-	for _, b := range bs {
-		cm, err := repo.LookupCommit(b.Target())
-		if err != nil {
-			return nil, err
-		}
-		if err := dfs(cm); err != nil {
-			return nil, err
-		}
-		cm, err = repo.LookupCommit(b.Target())
-		if err != nil {
-			return nil, err
-		}
-		res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
-	}
-	detached, err := repo.IsHeadDetached()
-	if err != nil {
-		return nil, err
-	}
-	res.detachedHead = detached
-	if detached {
-		head, err := repo.Head()
-		if err != nil {
-			return nil, err
-		}
-		cm, err := repo.LookupCommit(head.Target())
-		if err != nil {
-			return nil, err
-		}
-		if err := dfs(cm); err != nil {
-			return nil, err
-		}
-		cm, err = repo.LookupCommit(head.Target())
-		if err != nil {
-			return nil, err
-		}
-		res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
-	}
-	return res, nil
-}
-
 type commit struct {
-	parents  []*commit
-	children []*commit
-	message  string
-	id       string
+	parents      []*commit
+	children     []*commit
+	needsRebuild bool
+	message      string
+	id           string
 }
 
 type repoGraph struct {
 	branchHeads  []*commit
 	detachedHead bool
 }
-
-// TODO optimize buildGraph. It should work only with subgraph, containing all affected commits, we can build it with bfs
-// But it can break current iteractiveReword implementation
 
 func (g *repoGraph) Reword(params []rewordParam) {
 	newMessage := make(map[string]string)
@@ -140,6 +47,9 @@ func (g *repoGraph) TopSort() []*commit {
 	u := make(map[*commit]bool)
 	var dfs func(*commit)
 	dfs = func(c *commit) {
+		if c == nil {
+			return
+		}
 		u[c] = true
 		for _, next := range c.parents {
 			if !u[next] {
@@ -154,4 +64,210 @@ func (g *repoGraph) TopSort() []*commit {
 		}
 	}
 	return res
+}
+
+func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, error) {
+	repo, err := git.OpenRepository(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	it, err := repo.NewBranchIterator(git.BranchLocal)
+	if err != nil {
+		return nil, err
+	}
+	topCommits := make([]*git.Commit, 0)
+	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
+		if t != git.BranchLocal {
+			return fmt.Errorf("wrong branch type")
+		}
+		cm, err := repo.LookupCommit(b.Target())
+		if err != nil {
+			return err
+		}
+		topCommits = append(topCommits, cm)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	detached, err := repo.IsHeadDetached()
+	if err != nil {
+		return nil, err
+	}
+	if detached {
+		head, err := repo.Head()
+		if err != nil {
+			return nil, err
+		}
+		cm, err := repo.LookupCommit(head.Target())
+		inTops := false
+		for _, v := range topCommits {
+			if v.Id() == cm.Id() {
+				inTops = true
+			}
+		}
+		if !inTops {
+			topCommits = append(topCommits, cm)
+		}
+	}
+
+	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
+	commits := make(map[string]*commit)
+	q := newQueue()
+
+	needed := make(map[string]bool)
+	for _, v := range neededCommits {
+		needed[v] = true
+	}
+
+	for _, cm := range topCommits {
+		q.push(cm)
+	}
+
+	parents := make(map[string][]string)
+	children := make(map[string][]string)
+
+	for q.size() > 0 {
+		c := q.front()
+		q.pop()
+		com, ok := commits[c.Id().String()]
+		if ok {
+			continue
+		}
+		com = &commit{
+			message:      c.Message(),
+			parents:      make([]*commit, 0),
+			children:     make([]*commit, 0),
+			id:           c.Id().String(),
+			needsRebuild: true,
+		}
+		commits[com.id] = com
+		if _, ok := needed[com.id]; ok {
+			delete(needed, com.id)
+		}
+		n := c.ParentCount()
+		var i uint
+		for i = 0; i < n; i++ {
+			q.push(c.Parent(i))
+			if parents[com.id] == nil {
+				parents[com.id] = make([]string, 0)
+			}
+			parents[com.id] = append(parents[com.id], c.Parent(i).Id().String())
+			if children[c.Parent(i).Id().String()] == nil {
+				children[c.Parent(i).Id().String()] = make([]string, 0)
+			}
+			children[c.Parent(i).Id().String()] = append(children[c.Parent(i).Id().String()], com.id)
+		}
+		// TODO stop when we collect fully-connected graph with all needed commits
+	}
+
+	leafs := make([]*commit, 0)
+
+	for _, v := range commits {
+		for _, vv := range parents[v.id] {
+			if commits[vv] != nil {
+				v.parents = append(v.parents, commits[vv])
+			}
+		}
+		for _, vv := range children[v.id] {
+			v.children = append(v.children, commits[vv])
+		}
+		if len(v.parents) == 0 {
+			leafs = append(leafs, v)
+		}
+	}
+
+	u := make(map[string]bool)
+	del := make(map[string]bool)
+	for _, v := range neededCommits {
+		needed[v] = true
+	}
+	deleteParent := func(c, p *commit) {
+		idx := -1
+		for i, v := range c.parents {
+			if v.id == p.id {
+				idx = i
+			}
+		}
+		if idx != -1 {
+			c.parents = append(c.parents[:idx], c.parents[idx+1:]...)
+		}
+		del[p.id] = true
+	}
+
+	pp := make(map[*commit]int)
+	for _, v := range commits {
+		pp[v] = len(v.parents)
+	}
+
+	var dfs func(*commit)
+	dfs = func(c *commit) {
+		if needed[c.id] {
+			return
+		}
+		del[c.id] = true
+		if u[c.id] {
+			return
+		}
+		u[c.id] = true
+		for _, v := range c.children {
+			if needed[v.id] {
+				deleteParent(v, c)
+			} else {
+				pp[v]--
+				if pp[v] == 0 {
+					dfs(v)
+				}
+			}
+		}
+	}
+
+	for _, v := range leafs {
+		dfs(v)
+	}
+
+	nc := make(map[string]*commit)
+
+	for _, v := range commits {
+		if !del[v.id] {
+			nc[v.id] = v
+		}
+	}
+	commits = nc
+
+	for _, v := range commits {
+		if len(v.parents) == 0 {
+			leafs = append(leafs, v)
+		}
+	}
+
+	for _, v := range leafs {
+		oid, err := git.NewOid(v.id)
+		if err != nil {
+			return nil, err
+		}
+		cm, err := repo.LookupCommit(oid)
+		if err != nil {
+			return nil, err
+		}
+		n := cm.ParentCount()
+		for i := 0; uint(i) < n; i++ {
+			commit := &commit{
+				needsRebuild: false,
+				parents:      make([]*commit, 0),
+				children:     []*commit{v},
+				message:      cm.Parent(uint(i)).Message(),
+				id:           cm.Parent(uint(i)).Id().String(),
+			}
+			commits[commit.id] = commit
+			v.parents = append(v.parents, commit)
+		}
+	}
+
+	for _, cm := range topCommits {
+		if _, ok := commits[cm.Id().String()]; ok {
+			res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
+		}
+	}
+
+	return res, nil
 }

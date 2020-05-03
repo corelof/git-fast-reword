@@ -1,12 +1,13 @@
 package main
 
 import (
+	"log"
+	"os/exec"
+
 	git "github.com/libgit2/git2go/v28"
 )
 
-// TODO add logs
-// TODO call git garbage collector after job
-// TODO improve test corner cases coverage
+// TODO improve test corner cases coverage, maybee add randomly generated repositories
 
 func fastReword(repoRoot string, params []rewordParam) error {
 	relinkBranches := func(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
@@ -15,7 +16,11 @@ func fastReword(repoRoot string, params []rewordParam) error {
 			return err
 		}
 		if err = it.ForEach(func(b *git.Branch, _ git.BranchType) error {
-			nt, err := git.NewOid(newCommitHash[b.Target().String()])
+			nh, ok := newCommitHash[b.Target().String()]
+			if !ok {
+				nh = b.Target().String()
+			}
+			nt, err := git.NewOid(nh)
 			if err != nil {
 				return err
 			}
@@ -29,7 +34,11 @@ func fastReword(repoRoot string, params []rewordParam) error {
 			if err != nil {
 				return err
 			}
-			oid, err := git.NewOid(newCommitHash[h.Target().String()])
+			nh, ok := newCommitHash[h.Target().String()]
+			if !ok {
+				nh = h.Target().String()
+			}
+			oid, err := git.NewOid(nh)
 			if err != nil {
 				return err
 			}
@@ -38,21 +47,27 @@ func fastReword(repoRoot string, params []rewordParam) error {
 		return err
 	}
 
+	log.Println("Updating commits...")
 	repo, err := git.OpenRepository(repoRoot)
 	if err != nil {
 		return err
 	}
-	g, err := buildCommitGraph(repoRoot)
+	commits := make([]string, 0)
+	for _, v := range params {
+		commits = append(commits, v.hash)
+	}
+	g, err := buildCommitSubgraph(repoRoot, commits)
 	if err != nil {
 		return err
 	}
 	g.Reword(params)
 	order := g.TopSort()
-
 	newCommitHash := make(map[string]string)
-	// TODO we work with full graph now, but for subgraph we need to detect if branch really has no parents
 	for _, v := range order {
-		// TODO optimize loop body
+		if !v.needsRebuild {
+			continue
+		}
+		// TODO optimize loop body if needed
 		oid, err := git.NewOid(v.id)
 		if err != nil {
 			return err
@@ -88,5 +103,9 @@ func fastReword(repoRoot string, params []rewordParam) error {
 		newCommitHash[v.id] = ocm.Id().String()
 		v.id = ocm.Id().String()
 	}
+	log.Println("Relinking branches...")
+	defer func() {
+		exec.Command("/bin/sh", "-c", "cd", repoRoot, "&&", "git", "gc").Run()
+	}()
 	return relinkBranches(repo, newCommitHash, g.detachedHead)
 }

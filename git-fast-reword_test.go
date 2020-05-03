@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
 	"strconv"
 	"testing"
+
+	git "github.com/libgit2/git2go/v28"
 )
 
 const (
@@ -25,6 +28,7 @@ func TestMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = len(names)
 	for i := 1; i <= len(names); i++ {
 		t.Run("test "+strconv.Itoa(i), func(t *testing.T) {
 			hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", testDir).Output()
@@ -32,23 +36,21 @@ func TestMain(t *testing.T) {
 				t.Error(err)
 			}
 			params := make([]rewordParam, 0)
-			for i := 0; i < len(hashes)/outputHashLen; i++ {
+			for j := 0; j < len(hashes)/outputHashLen; j++ {
 				params = append(params,
-					rewordParam{string(hashes[i*outputHashLen : (i+1)*outputHashLen]), newCommitMessage},
+					rewordParam{string(hashes[j*outputHashLen : (j+1)*outputHashLen]), newCommitMessage},
 				)
 			}
-
-			g, err := buildCommitGraph(testDir)
+			g, err := buildFullCommitGraph(testDir)
 			if err != nil {
 				t.Error(err)
 			}
 			g.Reword(params)
-
 			if err := fastReword(testDir, params); err != nil {
 				t.Error(err)
 			}
 
-			g1, err := buildCommitGraph(testDir)
+			g1, err := buildFullCommitGraph(testDir)
 			if err != nil {
 				t.Error(err)
 			}
@@ -61,6 +63,9 @@ func TestMain(t *testing.T) {
 }
 
 func (g *repoGraph) Equal(g2 *repoGraph) bool {
+	if g.detachedHead != g2.detachedHead {
+		return false
+	}
 	if len(g.branchHeads) != len(g2.branchHeads) {
 		return false
 	}
@@ -156,4 +161,82 @@ func (g *repoGraph) GetCommit(hash string) *commit {
 		}
 	}
 	return nil
+}
+
+func buildFullCommitGraph(repoRoot string) (*repoGraph, error) {
+	repo, err := git.OpenRepository(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	it, err := repo.NewBranchIterator(git.BranchLocal)
+	if err != nil {
+		return nil, err
+	}
+	topCommits := make([]*git.Commit, 0)
+	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
+		if t != git.BranchLocal {
+			return fmt.Errorf("wrong branch type")
+		}
+		cm, err := repo.LookupCommit(b.Target())
+		if err != nil {
+			return err
+		}
+		topCommits = append(topCommits, cm)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	detached, err := repo.IsHeadDetached()
+	if err != nil {
+		return nil, err
+	}
+	if detached {
+		head, err := repo.Head()
+		if err != nil {
+			return nil, err
+		}
+		cm, err := repo.LookupCommit(head.Target())
+		topCommits = append(topCommits, cm)
+	}
+
+	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
+	commits := make(map[string]*commit)
+
+	var dfs func(*git.Commit) error
+	dfs = func(c *git.Commit) error {
+		if c == nil {
+			return fmt.Errorf("nil commit received")
+		}
+		com, ok := commits[c.Id().String()]
+		if ok {
+			return nil
+		}
+		com = &commit{
+			message:      c.Message(),
+			parents:      make([]*commit, 0),
+			children:     make([]*commit, 0),
+			id:           c.Id().String(),
+			needsRebuild: true,
+		}
+		commits[c.Id().String()] = com
+		n := c.ParentCount()
+		var i uint
+		for i = 0; i < n; i++ {
+			if err = dfs(c.Parent(i)); err != nil {
+				return err
+			}
+			com.parents = append(com.parents, commits[c.ParentId(i).String()])
+			commits[c.ParentId(i).String()].children = append(commits[c.ParentId(i).String()].children, com)
+		}
+		return nil
+	}
+
+	for _, cm := range topCommits {
+		if err := dfs(cm); err != nil {
+			return nil, err
+		}
+		res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
+	}
+
+	return res, nil
 }

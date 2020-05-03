@@ -3,6 +3,16 @@
 # It creates some commits, branches and prints testable commit hash
 # Repo is used for project testing
 
+#                         - c7 <- b3
+#                        |
+# c1 ---- c4 -- merge -- c5 -- c8 <- master
+# |             |        |
+#  - c2 - c3 ---          - c6 <- b2
+#         ^
+#         b1
+#
+# change c2, c8
+
 exec 7>&1
 exec >/dev/null
 
@@ -36,6 +46,6 @@ echo $i > "$i.txt" && git add "$i.txt" && git commit -m "c$i" && i=$((i+1))
 git checkout master
 
 echo $i > "$i.txt" && git add "$i.txt" && git commit -m "c$i" && i=$((i+1))
-RES_HASH="$RES_HASH$(git rev-parse HEAD)"
+RES_HASH="$RES_HASH$(git rev-parse HEAD)" # hash of commit c8
 
 printf $RES_HASH >&7

@@ -3,6 +3,17 @@
 # It creates some commits, branches and prints testable commit hash
 # Repo is used for project testing
 
+#                         - c7 <- b3
+#                        |
+# c1 ---- c4 -- merge -- c5 -- c8 <- master
+#               |        |\_c9 <- HEAD(detached)
+# |             |        |
+#  - c2 - c3 ---          - c6 <- b2
+#         ^
+#         b1
+#
+# change c1, c5, c9
+
 exec 7>&1
 exec >/dev/null
 
