@@ -71,6 +71,29 @@ func buildCommitGraph(repoRoot string) (*repoGraph, error) {
 		}
 		res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
 	}
+	detached, err := repo.IsHeadDetached()
+	if err != nil {
+		return nil, err
+	}
+	res.detachedHead = detached
+	if detached {
+		head, err := repo.Head()
+		if err != nil {
+			return nil, err
+		}
+		cm, err := repo.LookupCommit(head.Target())
+		if err != nil {
+			return nil, err
+		}
+		if err := dfs(cm); err != nil {
+			return nil, err
+		}
+		cm, err = repo.LookupCommit(head.Target())
+		if err != nil {
+			return nil, err
+		}
+		res.branchHeads = append(res.branchHeads, commits[cm.Id().String()])
+	}
 	return res, nil
 }
 
@@ -82,7 +105,8 @@ type commit struct {
 }
 
 type repoGraph struct {
-	branchHeads []*commit
+	branchHeads  []*commit
+	detachedHead bool
 }
 
 // TODO optimize buildGraph. It should work only with subgraph, containing all affected commits, we can build it with bfs

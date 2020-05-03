@@ -4,22 +4,40 @@ import (
 	git "github.com/libgit2/git2go/v28"
 )
 
+// TODO add logs
+// TODO call git garbage collector after job
+// TODO improve test corner cases coverage
+
 func fastReword(repoRoot string, params []rewordParam) error {
-	relinkBranches := func(repo *git.Repository, newCommitHash map[string]string) error {
+	relinkBranches := func(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 		it, err := repo.NewBranchIterator(git.BranchLocal)
 		if err != nil {
 			return err
 		}
-		return it.ForEach(func(b *git.Branch, _ git.BranchType) error {
+		if err = it.ForEach(func(b *git.Branch, _ git.BranchType) error {
 			nt, err := git.NewOid(newCommitHash[b.Target().String()])
 			if err != nil {
 				return err
 			}
 			_, err = b.SetTarget(nt, "")
 			return err
-		})
+		}); err != nil {
+			return err
+		}
+		if headDetached {
+			h, err := repo.Head()
+			if err != nil {
+				return err
+			}
+			oid, err := git.NewOid(newCommitHash[h.Target().String()])
+			if err != nil {
+				return err
+			}
+			_, err = h.SetTarget(oid, "")
+		}
+		return err
 	}
-	// TODO detached head is not detected and updated, needs to be fixed, also in graph
+
 	repo, err := git.OpenRepository(repoRoot)
 	if err != nil {
 		return err
@@ -30,9 +48,11 @@ func fastReword(repoRoot string, params []rewordParam) error {
 	}
 	g.Reword(params)
 	order := g.TopSort()
+
 	newCommitHash := make(map[string]string)
 	// TODO we work with full graph now, but for subgraph we need to detect if branch really has no parents
 	for _, v := range order {
+		// TODO optimize loop body
 		oid, err := git.NewOid(v.id)
 		if err != nil {
 			return err
@@ -68,8 +88,5 @@ func fastReword(repoRoot string, params []rewordParam) error {
 		newCommitHash[v.id] = ocm.Id().String()
 		v.id = ocm.Id().String()
 	}
-	if err = relinkBranches(repo, newCommitHash); err != nil {
-		return err
-	}
-	return nil
+	return relinkBranches(repo, newCommitHash, g.detachedHead)
 }
