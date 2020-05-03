@@ -8,6 +8,7 @@ import (
 )
 
 // TODO improve test corner cases coverage, maybee add randomly generated repositories
+// TODO for example graph with no updates(empty file) or when we change only last(it can drop)
 
 func fastReword(repoRoot string, params []rewordParam) error {
 	relinkBranches := func(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {

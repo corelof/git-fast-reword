@@ -115,12 +115,16 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 	q := newQueue()
 
 	needed := make(map[string]bool)
+	dsu := newDsu()
+
 	for _, v := range neededCommits {
 		needed[v] = true
+		dsu.addNode(v)
 	}
 
 	for _, cm := range topCommits {
 		q.push(cm)
+		dsu.addNode(cm.Id().String())
 	}
 
 	parents := make(map[string][]string)
@@ -129,6 +133,7 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 	for q.size() > 0 {
 		c := q.front()
 		q.pop()
+		dsu.addNode(c.Id().String())
 		com, ok := commits[c.Id().String()]
 		if ok {
 			continue
@@ -141,11 +146,11 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			needsRebuild: true,
 		}
 		commits[com.id] = com
-		if _, ok := needed[com.id]; ok {
-			delete(needed, com.id)
-		}
 		n := c.ParentCount()
 		var i uint
+		if dsu.comp == 1 {
+			break
+		}
 		for i = 0; i < n; i++ {
 			q.push(c.Parent(i))
 			if parents[com.id] == nil {
@@ -155,9 +160,9 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			if children[c.Parent(i).Id().String()] == nil {
 				children[c.Parent(i).Id().String()] = make([]string, 0)
 			}
+			dsu.connect(com.id, c.Parent(i).Id().String())
 			children[c.Parent(i).Id().String()] = append(children[c.Parent(i).Id().String()], com.id)
 		}
-		// TODO stop when we collect fully-connected graph with all needed commits
 	}
 
 	leafs := make([]*commit, 0)
