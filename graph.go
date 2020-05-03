@@ -84,3 +84,50 @@ type commit struct {
 type repoGraph struct {
 	branchHeads []*commit
 }
+
+// TODO optimize buildGraph. It should work only with subgraph, containing all affected commits, we can build it with bfs
+// But it can break current iteractiveReword implementation
+
+func (g *repoGraph) Reword(params []rewordParam) {
+	newMessage := make(map[string]string)
+	for _, v := range params {
+		newMessage[v.hash] = v.message
+	}
+	var dfs func(*commit)
+	dfs = func(c *commit) {
+		if c == nil {
+			return
+		}
+		nm, ok := newMessage[c.id]
+		if ok {
+			c.message = nm
+		}
+		for _, v := range c.parents {
+			dfs(v)
+		}
+	}
+	for _, v := range g.branchHeads {
+		dfs(v)
+	}
+}
+
+func (g *repoGraph) TopSort() []*commit {
+	res := make([]*commit, 0)
+	u := make(map[*commit]bool)
+	var dfs func(*commit)
+	dfs = func(c *commit) {
+		u[c] = true
+		for _, next := range c.parents {
+			if !u[next] {
+				dfs(next)
+			}
+		}
+		res = append(res, c)
+	}
+	for _, s := range g.branchHeads {
+		if !u[s] {
+			dfs(s)
+		}
+	}
+	return res
+}

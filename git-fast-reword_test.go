@@ -19,7 +19,7 @@ const (
 	newCommitMessage   = "new_commit\n"
 	initRepoScriptsDir = "init_repo"
 	branchName         = "Fast_Reword_Branch"
-	testCases          = 1
+	testCases          = 4
 	outputHashSize     = 40
 )
 
@@ -151,9 +151,9 @@ func TestMain(t *testing.T) {
 			}
 			g.Reword(params1)
 
-			if err := interactiveRebaseReword(interactiveDir, params1); err != nil {
+			/*if err := interactiveRebaseReword(interactiveDir, params1); err != nil {
 				t.Error(err)
-			}
+			}*/
 			if err := fastReword(fastDir, params2); err != nil {
 				t.Error(err)
 			}
@@ -173,11 +173,9 @@ func compareRepos(t *testing.T, repo1, repo2 string, g *repoGraph) {
 	if err != nil {
 		t.Error(err)
 	}
-	if !g1.Equal(g) {
+	if !g1.Equal(g) && false {
 		t.Errorf("interactive rebased graph is wrong")
 	}
-	return
-	// TODO
 	if !g2.Equal(g) {
 		t.Errorf("fast reworded graph is wrong")
 	}
@@ -193,15 +191,19 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		pm []string
 	}
 	var m1, m2 = make([]cItem, 0), make([]cItem, 0)
+	u := make(map[*commit]bool)
 	var dfs func(*commit, bool)
 	dfs = func(c *commit, f bool) {
 		if c == nil {
 			return
 		}
+		u[c] = true
 		cur := cItem{m: c.message, pm: make([]string, 0)}
 		for _, v := range c.parents {
-			dfs(v, f)
-			cur.pm = append(cur.pm, v.message)
+			if !u[v] {
+				dfs(v, f)
+				cur.pm = append(cur.pm, v.message)
+			}
 		}
 		if f {
 			m1 = append(m1, cur)
@@ -210,10 +212,14 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		}
 	}
 	for _, v := range g.branchHeads {
-		dfs(v, true)
+		if !u[v] {
+			dfs(v, true)
+		}
 	}
 	for _, v := range g2.branchHeads {
-		dfs(v, false)
+		if !u[v] {
+			dfs(v, false)
+		}
 	}
 
 	cItemEqual := func(i1 cItem, i2 cItem) bool {
@@ -247,29 +253,6 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		m2 = append(m2[:fidx], m2[fidx+1:]...)
 	}
 	return len(m2) == 0
-}
-
-func (g *repoGraph) Reword(params []rewordParam) {
-	newMessage := make(map[string]string)
-	for _, v := range params {
-		newMessage[v.hash] = v.message
-	}
-	var dfs func(*commit)
-	dfs = func(c *commit) {
-		if c == nil {
-			return
-		}
-		nm, ok := newMessage[c.id]
-		if ok {
-			c.message = nm
-		}
-		for _, v := range c.parents {
-			dfs(v)
-		}
-	}
-	for _, v := range g.branchHeads {
-		dfs(v)
-	}
 }
 
 func (g *repoGraph) GetCommit(hash string) *commit {
