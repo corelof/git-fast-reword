@@ -28,7 +28,6 @@ func TestMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = len(names)
 	for i := 1; i <= len(names); i++ {
 		t.Run("test "+strconv.Itoa(i), func(t *testing.T) {
 			hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", testDir).Output()
@@ -123,6 +122,7 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 	if len(m1) != len(m2) {
 		return false
 	}
+
 	for _, v := range m1 {
 		fidx := -1
 		for idx, vv := range m2 {
@@ -172,7 +172,10 @@ func buildFullCommitGraph(repoRoot string) (*repoGraph, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	topCommits := make([]*git.Commit, 0)
+	inTopCommits := make(map[string]struct{})
+
 	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
 		if t != git.BranchLocal {
 			return fmt.Errorf("wrong branch type")
@@ -181,11 +184,15 @@ func buildFullCommitGraph(repoRoot string) (*repoGraph, error) {
 		if err != nil {
 			return err
 		}
-		topCommits = append(topCommits, cm)
+		if _, ok := inTopCommits[cm.Id().String()]; !ok {
+			inTopCommits[cm.Id().String()] = struct{}{}
+			topCommits = append(topCommits, cm)
+		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+
 	detached, err := repo.IsHeadDetached()
 	if err != nil {
 		return nil, err
@@ -196,7 +203,44 @@ func buildFullCommitGraph(repoRoot string) (*repoGraph, error) {
 			return nil, err
 		}
 		cm, err := repo.LookupCommit(head.Target())
-		topCommits = append(topCommits, cm)
+		if _, ok := inTopCommits[cm.Id().String()]; !ok {
+			inTopCommits[cm.Id().String()] = struct{}{}
+			topCommits = append(topCommits, cm)
+		}
+	}
+
+	if err = repo.Tags.Foreach(func(name string, obj *git.Oid) error {
+		ref, err := repo.References.Lookup(name)
+		if err != nil {
+			return err
+		}
+		lightweightTag := false
+		t, err := repo.LookupTag(obj)
+		if err != nil {
+			lightweightTag = true
+		}
+		if lightweightTag {
+			if _, ok := inTopCommits[ref.Target().String()]; !ok {
+				inTopCommits[ref.Target().String()] = struct{}{}
+				cm, err := repo.LookupCommit(ref.Target())
+				if err != nil {
+					return err
+				}
+				topCommits = append(topCommits, cm)
+			}
+		} else {
+			cm, err := t.Target().AsCommit()
+			if err != nil {
+				return err
+			}
+			if _, ok := inTopCommits[cm.Id().String()]; !ok {
+				inTopCommits[cm.Id().String()] = struct{}{}
+				topCommits = append(topCommits, cm)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}

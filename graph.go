@@ -75,7 +75,10 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 	if err != nil {
 		return nil, err
 	}
+
 	topCommits := make([]*git.Commit, 0)
+	inTopCommits := make(map[string]struct{})
+
 	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
 		if t != git.BranchLocal {
 			return fmt.Errorf("wrong branch type")
@@ -84,11 +87,15 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 		if err != nil {
 			return err
 		}
-		topCommits = append(topCommits, cm)
+		if _, ok := inTopCommits[cm.Id().String()]; !ok {
+			inTopCommits[cm.Id().String()] = struct{}{}
+			topCommits = append(topCommits, cm)
+		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+
 	detached, err := repo.IsHeadDetached()
 	if err != nil {
 		return nil, err
@@ -99,15 +106,44 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			return nil, err
 		}
 		cm, err := repo.LookupCommit(head.Target())
-		inTops := false
-		for _, v := range topCommits {
-			if v.Id() == cm.Id() {
-				inTops = true
-			}
-		}
-		if !inTops {
+		if _, ok := inTopCommits[cm.Id().String()]; !ok {
+			inTopCommits[cm.Id().String()] = struct{}{}
 			topCommits = append(topCommits, cm)
 		}
+	}
+
+	if err = repo.Tags.Foreach(func(name string, obj *git.Oid) error {
+		ref, err := repo.References.Lookup(name)
+		if err != nil {
+			return err
+		}
+		lightweightTag := false
+		t, err := repo.LookupTag(obj)
+		if err != nil {
+			lightweightTag = true
+		}
+		if lightweightTag {
+			if _, ok := inTopCommits[ref.Target().String()]; !ok {
+				inTopCommits[ref.Target().String()] = struct{}{}
+				cm, err := repo.LookupCommit(ref.Target())
+				if err != nil {
+					return err
+				}
+				topCommits = append(topCommits, cm)
+			}
+		} else {
+			cm, err := t.Target().AsCommit()
+			if err != nil {
+				return err
+			}
+			if _, ok := inTopCommits[cm.Id().String()]; !ok {
+				inTopCommits[cm.Id().String()] = struct{}{}
+				topCommits = append(topCommits, cm)
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
@@ -115,25 +151,22 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 	q := newQueue()
 
 	needed := make(map[string]bool)
-	dsu := newDsu()
-
 	for _, v := range neededCommits {
 		needed[v] = true
-		dsu.addNode(v)
 	}
 
 	for _, cm := range topCommits {
 		q.push(cm)
-		dsu.addNode(cm.Id().String())
 	}
 
 	parents := make(map[string][]string)
 	children := make(map[string][]string)
 
+	// TODO we need to not walk through all graph
+
 	for q.size() > 0 {
 		c := q.front()
 		q.pop()
-		dsu.addNode(c.Id().String())
 		com, ok := commits[c.Id().String()]
 		if ok {
 			continue
@@ -148,9 +181,6 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 		commits[com.id] = com
 		n := c.ParentCount()
 		var i uint
-		if dsu.comp == 1 {
-			break
-		}
 		for i = 0; i < n; i++ {
 			q.push(c.Parent(i))
 			if parents[com.id] == nil {
@@ -160,7 +190,6 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			if children[c.Parent(i).Id().String()] == nil {
 				children[c.Parent(i).Id().String()] = make([]string, 0)
 			}
-			dsu.connect(com.id, c.Parent(i).Id().String())
 			children[c.Parent(i).Id().String()] = append(children[c.Parent(i).Id().String()], com.id)
 		}
 	}
