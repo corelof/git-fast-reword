@@ -21,24 +21,27 @@ type repoGraph struct {
 
 func (g *repoGraph) Reword(params []rewordParam) {
 	newMessage := make(map[string]string)
+	u := make(map[string]struct{})
 	for _, v := range params {
 		newMessage[v.hash] = v.message
 	}
 	var dfs func(*commit)
 	dfs = func(c *commit) {
-		if c == nil {
-			return
-		}
+		u[c.id] = struct{}{}
 		nm, ok := newMessage[c.id]
 		if ok {
 			c.message = nm
 		}
 		for _, v := range c.parents {
-			dfs(v)
+			if _, ok := u[v.id]; !ok {
+				dfs(v)
+			}
 		}
 	}
 	for _, v := range g.branchHeads {
-		dfs(v)
+		if _, ok := u[v.id]; !ok {
+			dfs(v)
+		}
 	}
 }
 

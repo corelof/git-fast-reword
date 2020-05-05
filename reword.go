@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os/exec"
 
@@ -10,6 +11,8 @@ import (
 // TODO check if commit really depends on parents hashes
 // TODO optimize subgraph building
 // TODO defer freeing
+// TODO as optimization we can reseive -cb flag that means only current branch working
+// TODO optimize by date flag, if u are sure that dates are true
 
 func relinkBranches(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 	it, err := repo.NewBranchIterator(git.BranchLocal)
@@ -120,7 +123,6 @@ func fastReword(repoRoot string, params []rewordParam) error {
 		return nil
 	}
 
-	log.Println("Updating commits...")
 	repo, err := git.OpenRepository(repoRoot)
 	if err != nil {
 		return err
@@ -129,6 +131,7 @@ func fastReword(repoRoot string, params []rewordParam) error {
 	for _, v := range params {
 		commits = append(commits, v.hash)
 	}
+	fmt.Println("Building repo graph...")
 	g, err := buildCommitSubgraph(repoRoot, commits)
 	if err != nil {
 		return err
@@ -136,6 +139,7 @@ func fastReword(repoRoot string, params []rewordParam) error {
 	g.Reword(params)
 	order := g.TopSort()
 	newCommitHash := make(map[string]string)
+	log.Println("Updating commits...")
 	for _, v := range order {
 		if !v.needsRebuild {
 			continue
