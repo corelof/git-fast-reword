@@ -8,8 +8,6 @@ import (
 )
 
 // TODO stress on intellij repo
-// TODO as optimization we can reseive -cb flag that means only current branch working
-// TODO переоформить флаги и тд
 
 func relinkBranches(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 	it, err := repo.NewBranchIterator(git.BranchLocal)
@@ -115,21 +113,17 @@ func relinkTags(repo *git.Repository, newCommitHash map[string]string) error {
 	return nil
 }
 
-func fastReword(repoRoot string, params []rewordParam, dateOptimization bool) error {
+func fastReword(repo *git.Repository, params []rewordParam, dateOptimization, headOnly bool) error {
 	if len(params) < 1 {
 		return nil
 	}
 
-	repo, err := git.OpenRepository(repoRoot)
-	if err != nil {
-		return err
-	}
 	commits := make([]string, 0)
 	for _, v := range params {
 		commits = append(commits, v.hash)
 	}
 	log.Println("Building repo graph...")
-	g, err := buildCommitSubgraph(repoRoot, commits, dateOptimization)
+	g, err := buildCommitSubgraph(repo, commits, dateOptimization, headOnly)
 	if err != nil {
 		return err
 	}
@@ -187,5 +181,6 @@ func fastReword(repoRoot string, params []rewordParam, dateOptimization bool) er
 	if err = relinkTags(repo, newCommitHash); err != nil {
 		return err
 	}
-	return exec.Command("/bin/sh", "-c", "cd", repoRoot, "&&", "git", "gc").Run()
+	log.Println("Running git garbage collector...")
+	return exec.Command("/bin/sh", "-c", "cd", repo.Path(), "&&", "git", "gc").Run()
 }

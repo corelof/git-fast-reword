@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	git "github.com/libgit2/git2go/v28"
 )
@@ -19,9 +20,15 @@ const (
 	outputHashLen      = 40
 )
 
-var rm = true
+var headOnlySupported = map[int]bool{
+	1:  true,
+	6:  true,
+	7:  true,
+	10: true,
+}
 
 func TestMain(tm *testing.T) {
+	os.RemoveAll(testDir)
 	ird, err := os.Open(initRepoScriptsDir)
 	if err != nil {
 		tm.Fatal(err)
@@ -30,46 +37,64 @@ func TestMain(tm *testing.T) {
 	if err != nil {
 		tm.Fatal(err)
 	}
-	os.RemoveAll(testDir)
+
 	for tn := 0; tn < 10; tn++ {
-		for opt := 0; opt <= 1; opt++ {
-			for i := 1; i <= len(names); i++ {
-				tm.Run("test "+strconv.Itoa(i)+" date optimization "+strconv.Itoa(opt)+"n"+strconv.Itoa(tn), func(t *testing.T) {
-					dest := filepath.Join(testDir, t.Name())
-					hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", dest).Output()
-					if err != nil {
-						t.Fatal(err)
-					}
-					params := make([]rewordParam, 0)
-					for j := 0; j < len(hashes)/outputHashLen; j++ {
-						params = append(params,
-							rewordParam{string(hashes[j*outputHashLen : (j+1)*outputHashLen]), newCommitMessage},
-						)
-					}
-					g, err := buildFullCommitGraph(dest)
-					if err != nil {
-						t.Fatal(err)
-					}
-					g.Reword(params)
-					if err := fastReword(dest, params, opt == 1); err != nil {
-						t.Fatal(err)
+		for headOnly := 0; headOnly <= 1; headOnly++ {
+			for dateOpt := 0; dateOpt <= 1; dateOpt++ {
+				for i := 1; i <= len(names); i++ {
+					if headOnly == 1 && !headOnlySupported[i] {
+						continue
 					}
 
-					g1, err := buildFullCommitGraph(dest)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !g1.Equal(g) {
-						t.Fatalf("fast rebased graph is wrong")
-					} else {
-						os.RemoveAll(dest)
-					}
-				})
+					name := "test " + strconv.Itoa(i) +
+						" date optimization " + strconv.Itoa(dateOpt) +
+						" head only " + strconv.Itoa(headOnly) +
+						" n " + strconv.Itoa(tn)
+
+					tm.Run(name, func(t *testing.T) {
+						dest := filepath.Join(testDir, t.Name())
+						hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", dest).Output()
+						if err != nil {
+							t.Fatal(err)
+						}
+						params := make([]rewordParam, 0)
+						for j := 0; j < len(hashes)/outputHashLen; j++ {
+							params = append(params,
+								rewordParam{string(hashes[j*outputHashLen : (j+1)*outputHashLen]), newCommitMessage},
+							)
+						}
+
+						repo, err := git.OpenRepository(dest)
+						if err != nil {
+							t.Fatal(err)
+						}
+
+						g, err := buildFullCommitGraph(repo)
+						if err != nil {
+							t.Fatal(err)
+						}
+						g.Reword(params)
+						if err := fastReword(repo, params, dateOpt == 1, headOnly == 1); err != nil {
+							t.Fatal(err)
+						}
+
+						g1, err := buildFullCommitGraph(repo)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !g1.Equal(g) {
+							t.Fatalf("fast rebased graph is wrong")
+						} else {
+							os.RemoveAll(dest)
+						}
+					})
+				}
 			}
 		}
 	}
 }
 
+// Compares two repo graphs
 func (g *repoGraph) Equal(g2 *repoGraph) bool {
 	if g.detachedHead != g2.detachedHead {
 		return false
@@ -114,10 +139,6 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		}
 	}
 
-	fmt.Println(m1)
-	fmt.Println("----")
-	fmt.Println(m2)
-
 	cItemEqual := func(i1 cItem, i2 cItem) bool {
 		if i1.m != i2.m {
 			return false
@@ -152,107 +173,15 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 	return len(m2) == 0
 }
 
-func (g *repoGraph) GetCommit(hash string) *commit {
-	var dfs func(*commit) *commit
-	dfs = func(c *commit) *commit {
-		if c == nil {
-			return nil
-		}
-		if c.id == hash {
-			return c
-		}
-		for _, v := range c.parents {
-			if res := dfs(v); res != nil {
-				return res
-			}
-		}
-		return nil
-	}
-	for _, v := range g.branchHeads {
-		if res := dfs(v); res != nil {
-			return res
-		}
-	}
-	return nil
-}
-
-func buildFullCommitGraph(repoRoot string) (*repoGraph, error) {
-	repo, err := git.OpenRepository(repoRoot)
+// Builds full repo directed acyclic graph
+func buildFullCommitGraph(repo *git.Repository) (*repoGraph, error) {
+	topCommits, err := getTopCommits(repo, false, false, time.Now())
 	if err != nil {
-		return nil, err
-	}
-	it, err := repo.NewBranchIterator(git.BranchLocal)
-	if err != nil {
-		return nil, err
-	}
-
-	topCommits := make([]*git.Commit, 0)
-	inTopCommits := make(map[string]struct{})
-
-	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
-		if t != git.BranchLocal {
-			return fmt.Errorf("wrong branch type")
-		}
-		cm, err := repo.LookupCommit(b.Target())
-		if err != nil {
-			return err
-		}
-		if _, ok := inTopCommits[cm.Id().String()]; !ok {
-			inTopCommits[cm.Id().String()] = struct{}{}
-			topCommits = append(topCommits, cm)
-		}
-		return nil
-	}); err != nil {
 		return nil, err
 	}
 
 	detached, err := repo.IsHeadDetached()
 	if err != nil {
-		return nil, err
-	}
-	if detached {
-		head, err := repo.Head()
-		if err != nil {
-			return nil, err
-		}
-		cm, err := repo.LookupCommit(head.Target())
-		if _, ok := inTopCommits[cm.Id().String()]; !ok {
-			inTopCommits[cm.Id().String()] = struct{}{}
-			topCommits = append(topCommits, cm)
-		}
-	}
-
-	if err = repo.Tags.Foreach(func(name string, obj *git.Oid) error {
-		ref, err := repo.References.Lookup(name)
-		if err != nil {
-			return err
-		}
-		lightweightTag := false
-		t, err := repo.LookupTag(obj)
-		if err != nil {
-			lightweightTag = true
-		}
-		if lightweightTag {
-			if _, ok := inTopCommits[ref.Target().String()]; !ok {
-				inTopCommits[ref.Target().String()] = struct{}{}
-				cm, err := repo.LookupCommit(ref.Target())
-				if err != nil {
-					return err
-				}
-				topCommits = append(topCommits, cm)
-			}
-		} else {
-			cm, err := t.Target().AsCommit()
-			if err != nil {
-				return err
-			}
-			if _, ok := inTopCommits[cm.Id().String()]; !ok {
-				inTopCommits[cm.Id().String()] = struct{}{}
-				topCommits = append(topCommits, cm)
-			}
-		}
-		return nil
-	}); err != nil {
 		return nil, err
 	}
 

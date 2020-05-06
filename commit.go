@@ -8,11 +8,8 @@ import (
 	git "github.com/libgit2/git2go/v28"
 )
 
-func getCommitHash(repoRoot, commit string) (string, error) {
-	repo, err := git.OpenRepository(repoRoot)
-	if err != nil {
-		return "", err
-	}
+// Converts relative 'path'(e.g. HEAD~2) to commit hash
+func getCommitHash(repo *git.Repository, commit string) (string, error) {
 	ref, err := repo.Head()
 	if err != nil {
 		return "", err
@@ -65,10 +62,10 @@ func getCommitHash(repoRoot, commit string) (string, error) {
 	return cm.Id().String(), nil
 }
 
-func parseCommit(wd, commit string) (string, error) {
+func parseCommit(repo *git.Repository, commit string) (string, error) {
 	var err error
 	if strings.Contains(commit, "HEAD") {
-		commit, err = getCommitHash(wd, commit)
+		commit, err = getCommitHash(repo, commit)
 		if err != nil {
 			return "", err
 		}

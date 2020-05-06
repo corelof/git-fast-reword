@@ -20,6 +20,7 @@ type repoGraph struct {
 	detachedHead bool
 }
 
+// Reword updates messages of some commits according to params
 func (g *repoGraph) Reword(params []rewordParam) {
 	newMessage := make(map[string]string)
 	u := make(map[string]struct{})
@@ -46,6 +47,7 @@ func (g *repoGraph) Reword(params []rewordParam) {
 	}
 }
 
+// TopSort returns topological sort of commit graph
 func (g *repoGraph) TopSort() []*commit {
 	res := make([]*commit, 0)
 	u := make(map[*commit]bool)
@@ -70,51 +72,125 @@ func (g *repoGraph) TopSort() []*commit {
 	return res
 }
 
-func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimization bool) (*repoGraph, error) {
-	repo, err := git.OpenRepository(repoRoot)
-	if err != nil {
-		return nil, err
-	}
+// returns local branch / tag / detached head targets, optimizes by date / headonly if required
+func getTopCommits(repo *git.Repository, dateOptimization, headOnly bool, earliestRequiredCommit time.Time) ([]*git.Commit, error) {
+	topCommits := make([]*git.Commit, 0)
 
-	var earliest time.Time
-	upd := false
-	if dateOptimization {
-		for _, v := range neededCommits {
-			oid, err := git.NewOid(v)
+	if headOnly {
+		head, err := repo.Head()
+		if err != nil {
+			return nil, err
+		}
+		cm, err := repo.LookupCommit(head.Target())
+		topCommits = append(topCommits, cm)
+	} else {
+		inTopCommits := make(map[string]struct{})
+		it, err := repo.NewBranchIterator(git.BranchLocal)
+		if err != nil {
+			return nil, err
+		}
+
+		if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
+			if t != git.BranchLocal {
+				return fmt.Errorf("wrong branch type")
+			}
+			cm, err := repo.LookupCommit(b.Target())
+			if err != nil {
+				return err
+			}
+			if dateOptimization && cm.Committer().When.Before(earliestRequiredCommit) {
+				return nil
+			}
+			if _, ok := inTopCommits[cm.Id().String()]; !ok {
+				inTopCommits[cm.Id().String()] = struct{}{}
+				topCommits = append(topCommits, cm)
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+
+		detached, err := repo.IsHeadDetached()
+		if err != nil {
+			return nil, err
+		}
+		if detached {
+			head, err := repo.Head()
 			if err != nil {
 				return nil, err
 			}
-			cm, err := repo.LookupCommit(oid)
-			dt := cm.Committer().When.UTC()
-			if !upd || dt.Before(earliest) {
-				earliest = dt
-				upd = true
+			cm, err := repo.LookupCommit(head.Target())
+			if !(dateOptimization && cm.Committer().When.Before(earliestRequiredCommit)) {
+				if _, ok := inTopCommits[cm.Id().String()]; !ok {
+					inTopCommits[cm.Id().String()] = struct{}{}
+					topCommits = append(topCommits, cm)
+				}
 			}
 		}
-	}
 
-	it, err := repo.NewBranchIterator(git.BranchLocal)
-	if err != nil {
-		return nil, err
-	}
-
-	topCommits := make([]*git.Commit, 0)
-	inTopCommits := make(map[string]struct{})
-
-	if err = it.ForEach(func(b *git.Branch, t git.BranchType) error {
-		if t != git.BranchLocal {
-			return fmt.Errorf("wrong branch type")
+		if err = repo.Tags.Foreach(func(name string, obj *git.Oid) error {
+			ref, err := repo.References.Lookup(name)
+			if err != nil {
+				return err
+			}
+			lightweightTag := false
+			t, err := repo.LookupTag(obj)
+			if err != nil {
+				lightweightTag = true
+			}
+			if lightweightTag {
+				if _, ok := inTopCommits[ref.Target().String()]; !ok {
+					inTopCommits[ref.Target().String()] = struct{}{}
+					cm, err := repo.LookupCommit(ref.Target())
+					if err != nil {
+						return err
+					}
+					if dateOptimization && cm.Committer().When.Before(earliestRequiredCommit) {
+						return nil
+					}
+					topCommits = append(topCommits, cm)
+				}
+			} else {
+				cm, err := t.Target().AsCommit()
+				if err != nil {
+					return err
+				}
+				if dateOptimization && cm.Committer().When.Before(earliestRequiredCommit) {
+					return nil
+				}
+				if _, ok := inTopCommits[cm.Id().String()]; !ok {
+					inTopCommits[cm.Id().String()] = struct{}{}
+					topCommits = append(topCommits, cm)
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
-		cm, err := repo.LookupCommit(b.Target())
+	}
+	return topCommits, nil
+}
+
+func buildCommitSubgraph(repo *git.Repository, neededCommits []string, dateOptimization, headOnly bool) (*repoGraph, error) {
+	needed := make(map[string]bool)
+	var earliest time.Time
+	upd := false
+	for _, v := range neededCommits {
+		needed[v] = true
+		oid, err := git.NewOid(v)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if _, ok := inTopCommits[cm.Id().String()]; !ok {
-			inTopCommits[cm.Id().String()] = struct{}{}
-			topCommits = append(topCommits, cm)
+		cm, err := repo.LookupCommit(oid)
+		dt := cm.Committer().When.UTC()
+		if !upd || dt.Before(earliest) {
+			earliest = dt
+			upd = true
 		}
-		return nil
-	}); err != nil {
+	}
+
+	topCommits, err := getTopCommits(repo, dateOptimization, headOnly, earliest)
+	if err != nil {
 		return nil, err
 	}
 
@@ -122,60 +198,11 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimizati
 	if err != nil {
 		return nil, err
 	}
-	if detached {
-		head, err := repo.Head()
-		if err != nil {
-			return nil, err
-		}
-		cm, err := repo.LookupCommit(head.Target())
-		if _, ok := inTopCommits[cm.Id().String()]; !ok {
-			inTopCommits[cm.Id().String()] = struct{}{}
-			topCommits = append(topCommits, cm)
-		}
-	}
-
-	if err = repo.Tags.Foreach(func(name string, obj *git.Oid) error {
-		ref, err := repo.References.Lookup(name)
-		if err != nil {
-			return err
-		}
-		lightweightTag := false
-		t, err := repo.LookupTag(obj)
-		if err != nil {
-			lightweightTag = true
-		}
-		if lightweightTag {
-			if _, ok := inTopCommits[ref.Target().String()]; !ok {
-				inTopCommits[ref.Target().String()] = struct{}{}
-				cm, err := repo.LookupCommit(ref.Target())
-				if err != nil {
-					return err
-				}
-				topCommits = append(topCommits, cm)
-			}
-		} else {
-			cm, err := t.Target().AsCommit()
-			if err != nil {
-				return err
-			}
-			if _, ok := inTopCommits[cm.Id().String()]; !ok {
-				inTopCommits[cm.Id().String()] = struct{}{}
-				topCommits = append(topCommits, cm)
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-
-	needed := make(map[string]bool)
-	for _, v := range neededCommits {
-		needed[v] = true
-	}
 
 	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
 	commits := make(map[string]*commit)
 
+	// Select some subgraph containing all required commits
 	var dfs func(*git.Commit) error
 	dfs = func(c *git.Commit) error {
 		if c == nil {
@@ -199,7 +226,7 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimizati
 		n := c.ParentCount()
 		var i uint
 		for i = 0; i < n; i++ {
-			if err = dfs(c.Parent(i)); err != nil {
+			if err := dfs(c.Parent(i)); err != nil {
 				return err
 			}
 			if pc, ok := commits[c.ParentId(i).String()]; ok {
@@ -210,18 +237,18 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimizati
 		return nil
 	}
 	for _, v := range topCommits {
-		if err = dfs(v); err != nil {
+		if err := dfs(v); err != nil {
 			return nil, err
 		}
 	}
 
+	// Drop guaranteed useless commits
 	leafs := make([]*commit, 0)
 	for _, v := range commits {
 		if len(v.parents) == 0 {
 			leafs = append(leafs, v)
 		}
 	}
-
 	u := make(map[string]bool)
 	deleteParent := func(c, p *commit) {
 		idx := -1
@@ -236,6 +263,7 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimizati
 		u[p.id] = true
 	}
 
+	// Create some commits as parents that we will not update(to use hashes as parents value)
 	pp := make(map[string]int)
 	for _, v := range commits {
 		pp[v.id] = len(v.parents)
