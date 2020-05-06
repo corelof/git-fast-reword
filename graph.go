@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	git "github.com/libgit2/git2go/v28"
 )
@@ -69,11 +70,29 @@ func (g *repoGraph) TopSort() []*commit {
 	return res
 }
 
-func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, error) {
+func buildCommitSubgraph(repoRoot string, neededCommits []string, dateOptimization bool) (*repoGraph, error) {
 	repo, err := git.OpenRepository(repoRoot)
 	if err != nil {
 		return nil, err
 	}
+
+	var earliest time.Time
+	upd := false
+	if dateOptimization {
+		for _, v := range neededCommits {
+			oid, err := git.NewOid(v)
+			if err != nil {
+				return nil, err
+			}
+			cm, err := repo.LookupCommit(oid)
+			dt := cm.Committer().When.UTC()
+			if !upd || dt.Before(earliest) {
+				earliest = dt
+				upd = true
+			}
+		}
+	}
+
 	it, err := repo.NewBranchIterator(git.BranchLocal)
 	if err != nil {
 		return nil, err
@@ -149,30 +168,25 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 		return nil, err
 	}
 
-	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
-	commits := make(map[string]*commit)
-	q := newQueue()
-
 	needed := make(map[string]bool)
 	for _, v := range neededCommits {
 		needed[v] = true
 	}
 
-	for _, cm := range topCommits {
-		q.push(cm)
-	}
+	res := &repoGraph{branchHeads: make([]*commit, 0), detachedHead: detached}
+	commits := make(map[string]*commit)
 
-	parents := make(map[string][]string)
-	children := make(map[string][]string)
-
-	// TODO we need to not walk through all graph
-
-	for q.size() > 0 {
-		c := q.front()
-		q.pop()
+	var dfs func(*git.Commit) error
+	dfs = func(c *git.Commit) error {
+		if c == nil {
+			return fmt.Errorf("nil commit")
+		}
+		if dateOptimization && c.Committer().When.Before(earliest) && !needed[c.Id().String()] {
+			return nil
+		}
 		com, ok := commits[c.Id().String()]
 		if ok {
-			continue
+			return nil
 		}
 		com = &commit{
 			message:      c.Message(),
@@ -181,43 +195,34 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			id:           c.Id().String(),
 			needsRebuild: true,
 		}
-		commits[com.id] = com
+		commits[c.Id().String()] = com
 		n := c.ParentCount()
 		var i uint
 		for i = 0; i < n; i++ {
-			q.push(c.Parent(i))
-			if parents[com.id] == nil {
-				parents[com.id] = make([]string, 0)
+			if err = dfs(c.Parent(i)); err != nil {
+				return err
 			}
-			parents[com.id] = append(parents[com.id], c.Parent(i).Id().String())
-			if children[c.Parent(i).Id().String()] == nil {
-				children[c.Parent(i).Id().String()] = make([]string, 0)
+			if pc, ok := commits[c.ParentId(i).String()]; ok {
+				com.parents = append(com.parents, pc)
+				commits[pc.id].children = append(commits[pc.id].children, com)
 			}
-			children[c.Parent(i).Id().String()] = append(children[c.Parent(i).Id().String()], com.id)
+		}
+		return nil
+	}
+	for _, v := range topCommits {
+		if err = dfs(v); err != nil {
+			return nil, err
 		}
 	}
 
 	leafs := make([]*commit, 0)
-
 	for _, v := range commits {
-		for _, vv := range parents[v.id] {
-			if commits[vv] != nil {
-				v.parents = append(v.parents, commits[vv])
-			}
-		}
-		for _, vv := range children[v.id] {
-			v.children = append(v.children, commits[vv])
-		}
 		if len(v.parents) == 0 {
 			leafs = append(leafs, v)
 		}
 	}
 
 	u := make(map[string]bool)
-	del := make(map[string]bool)
-	for _, v := range neededCommits {
-		needed[v] = true
-	}
 	deleteParent := func(c, p *commit) {
 		idx := -1
 		for i, v := range c.parents {
@@ -228,20 +233,19 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 		if idx != -1 {
 			c.parents = append(c.parents[:idx], c.parents[idx+1:]...)
 		}
-		del[p.id] = true
+		u[p.id] = true
 	}
 
-	pp := make(map[*commit]int)
+	pp := make(map[string]int)
 	for _, v := range commits {
-		pp[v] = len(v.parents)
+		pp[v.id] = len(v.parents)
 	}
 
-	var dfs func(*commit)
-	dfs = func(c *commit) {
+	var dfs2 func(*commit)
+	dfs2 = func(c *commit) {
 		if needed[c.id] {
 			return
 		}
-		del[c.id] = true
 		if u[c.id] {
 			return
 		}
@@ -250,34 +254,31 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 			if needed[v.id] {
 				deleteParent(v, c)
 			} else {
-				pp[v]--
-				if pp[v] == 0 {
-					dfs(v)
+				pp[v.id]--
+				if pp[v.id] == 0 {
+					dfs2(v)
+				} else {
+					deleteParent(v, c)
 				}
 			}
 		}
 	}
 
 	for _, v := range leafs {
-		dfs(v)
+		dfs2(v)
 	}
 
 	nc := make(map[string]*commit)
-
 	for _, v := range commits {
-		if !del[v.id] {
+		if !u[v.id] {
 			nc[v.id] = v
 		}
 	}
 	commits = nc
 
-	for _, v := range commits {
-		if len(v.parents) == 0 {
-			leafs = append(leafs, v)
-		}
-	}
+	tadd := make([]*commit, 0)
 
-	for _, v := range leafs {
+	for _, v := range commits {
 		oid, err := git.NewOid(v.id)
 		if err != nil {
 			return nil, err
@@ -286,18 +287,26 @@ func buildCommitSubgraph(repoRoot string, neededCommits []string) (*repoGraph, e
 		if err != nil {
 			return nil, err
 		}
-		n := cm.ParentCount()
-		for i := 0; uint(i) < n; i++ {
-			commit := &commit{
-				needsRebuild: false,
-				parents:      make([]*commit, 0),
-				children:     []*commit{v},
-				message:      cm.Parent(uint(i)).Message(),
-				id:           cm.Parent(uint(i)).Id().String(),
+		pc := cm.ParentCount()
+		var i uint
+		for i = 0; i < pc; i++ {
+			c := cm.Parent(i)
+			if _, ok := commits[c.Id().String()]; !ok {
+				commit := &commit{
+					needsRebuild: false,
+					parents:      make([]*commit, 0),
+					children:     []*commit{v},
+					message:      c.Message(),
+					id:           c.Id().String(),
+				}
+				tadd = append(tadd, commit)
+				v.parents = append(v.parents, commit)
 			}
-			commits[commit.id] = commit
-			v.parents = append(v.parents, commit)
 		}
+	}
+
+	for _, v := range tadd {
+		commits[v.id] = v
 	}
 
 	for _, cm := range topCommits {

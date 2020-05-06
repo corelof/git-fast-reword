@@ -1,18 +1,15 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os/exec"
 
 	git "github.com/libgit2/git2go/v28"
 )
 
-// TODO check if commit really depends on parents hashes
-// TODO optimize subgraph building
-// TODO defer freeing
+// TODO stress on intellij repo
 // TODO as optimization we can reseive -cb flag that means only current branch working
-// TODO optimize by date flag, if u are sure that dates are true
+// TODO переоформить флаги и тд
 
 func relinkBranches(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 	it, err := repo.NewBranchIterator(git.BranchLocal)
@@ -118,7 +115,7 @@ func relinkTags(repo *git.Repository, newCommitHash map[string]string) error {
 	return nil
 }
 
-func fastReword(repoRoot string, params []rewordParam) error {
+func fastReword(repoRoot string, params []rewordParam, dateOptimization bool) error {
 	if len(params) < 1 {
 		return nil
 	}
@@ -131,13 +128,14 @@ func fastReword(repoRoot string, params []rewordParam) error {
 	for _, v := range params {
 		commits = append(commits, v.hash)
 	}
-	fmt.Println("Building repo graph...")
-	g, err := buildCommitSubgraph(repoRoot, commits)
+	log.Println("Building repo graph...")
+	g, err := buildCommitSubgraph(repoRoot, commits, dateOptimization)
 	if err != nil {
 		return err
 	}
 	g.Reword(params)
 	order := g.TopSort()
+	log.Printf("Commits to rebuild: %d", len(order))
 	newCommitHash := make(map[string]string)
 	log.Println("Updating commits...")
 	for _, v := range order {

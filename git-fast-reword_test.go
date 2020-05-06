@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -12,52 +13,60 @@ import (
 )
 
 const (
-	testDir = "test_repo/"
-
+	testDir            = "test_repos/"
 	newCommitMessage   = "new_commit\n"
 	initRepoScriptsDir = "init_repo"
 	outputHashLen      = 40
 )
 
-func TestMain(t *testing.T) {
+var rm = true
+
+func TestMain(tm *testing.T) {
 	ird, err := os.Open(initRepoScriptsDir)
 	if err != nil {
-		t.Fatal(err)
+		tm.Fatal(err)
 	}
 	names, err := ird.Readdirnames(0)
 	if err != nil {
-		t.Fatal(err)
+		tm.Fatal(err)
 	}
-	for i := 1; i <= len(names); i++ {
-		t.Run("test "+strconv.Itoa(i), func(t *testing.T) {
-			hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", testDir).Output()
-			if err != nil {
-				t.Error(err)
-			}
-			params := make([]rewordParam, 0)
-			for j := 0; j < len(hashes)/outputHashLen; j++ {
-				params = append(params,
-					rewordParam{string(hashes[j*outputHashLen : (j+1)*outputHashLen]), newCommitMessage},
-				)
-			}
-			g, err := buildFullCommitGraph(testDir)
-			if err != nil {
-				t.Error(err)
-			}
-			g.Reword(params)
-			if err := fastReword(testDir, params); err != nil {
-				t.Error(err)
-			}
+	os.RemoveAll(testDir)
+	for tn := 0; tn < 10; tn++ {
+		for opt := 0; opt <= 1; opt++ {
+			for i := 1; i <= len(names); i++ {
+				tm.Run("test "+strconv.Itoa(i)+" date optimization "+strconv.Itoa(opt)+"n"+strconv.Itoa(tn), func(t *testing.T) {
+					dest := filepath.Join(testDir, t.Name())
+					hashes, err := exec.Command("./"+initRepoScriptsDir+"/"+strconv.Itoa(i)+".sh", dest).Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					params := make([]rewordParam, 0)
+					for j := 0; j < len(hashes)/outputHashLen; j++ {
+						params = append(params,
+							rewordParam{string(hashes[j*outputHashLen : (j+1)*outputHashLen]), newCommitMessage},
+						)
+					}
+					g, err := buildFullCommitGraph(dest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					g.Reword(params)
+					if err := fastReword(dest, params, opt == 1); err != nil {
+						t.Fatal(err)
+					}
 
-			g1, err := buildFullCommitGraph(testDir)
-			if err != nil {
-				t.Error(err)
+					g1, err := buildFullCommitGraph(dest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !g1.Equal(g) {
+						t.Fatalf("fast rebased graph is wrong")
+					} else {
+						os.RemoveAll(dest)
+					}
+				})
 			}
-			if !g1.Equal(g) {
-				t.Errorf("fast rebased graph is wrong")
-			}
-		})
-		os.RemoveAll(testDir)
+		}
 	}
 }
 
@@ -85,8 +94,8 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 		for _, v := range c.parents {
 			if !u[v] {
 				dfs(v, f)
-				cur.pm = append(cur.pm, v.message)
 			}
+			cur.pm = append(cur.pm, v.message)
 		}
 		if f {
 			m1 = append(m1, cur)
@@ -104,6 +113,10 @@ func (g *repoGraph) Equal(g2 *repoGraph) bool {
 			dfs(v, false)
 		}
 	}
+
+	fmt.Println(m1)
+	fmt.Println("----")
+	fmt.Println(m2)
 
 	cItemEqual := func(i1 cItem, i2 cItem) bool {
 		if i1.m != i2.m {

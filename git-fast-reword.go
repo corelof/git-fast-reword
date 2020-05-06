@@ -59,8 +59,14 @@ func main() {
 	}
 
 	filePtr := flag.String("file", "", "path to file in format \"<hash> <new_message>\n\"")
+	dateOptimizationPtr := flag.Bool("date", false, "optimize graph building using commit dates. Use it with caution, if invariant 'date(child) > date(parent)' is broken for at least one pair (parent, child), program can behave undefined")
 	flag.Parse()
 	filePath := *filePtr
+	dateOptimization := *dateOptimizationPtr
+	flagOffset := 0
+	if dateOptimization {
+		flagOffset++
+	}
 
 	params := make([]rewordParam, 0)
 	if filePath != "" {
@@ -78,19 +84,19 @@ func main() {
 			exitWithError("error while parsing reword file: %s", err.Error())
 		}
 	} else {
-		if len(os.Args) != 3 {
+		if len(os.Args) != 3+flagOffset {
 			fmt.Fprint(os.Stderr, "command line arguments are invalid\n")
 			os.Exit(1)
 		}
-		commit, err := parseCommit(wd, os.Args[1])
+		commit, err := parseCommit(wd, os.Args[flagOffset+1])
 		if err != nil {
 			exitWithError("error while getting commit hash %s: %s", os.Args[1], err.Error())
 		}
-		newMessage := os.Args[2]
+		newMessage := os.Args[flagOffset+2]
 		params = []rewordParam{{commit, newMessage}}
 	}
 
-	if err = fastReword(wd, params); err != nil {
+	if err = fastReword(wd, params, dateOptimization); err != nil {
 		exitWithError("error during fast reword: %s", err.Error())
 	}
 }
