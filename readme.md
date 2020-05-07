@@ -9,6 +9,7 @@ Simple tool to change commit messages.
 ### Building
 
 Depends on: `golang 1.13`, `libgit2 v28`(package libgit2-dev for ubuntu, libgit2 for arch)
+
 Clone repo, run `go mod download` and `go build` in repo root.
 
 ### Running
