@@ -79,9 +79,7 @@ func relinkTags(repo *git.Repository, newCommitHash map[string]string) error {
 		if err != nil {
 			return err
 		}
-		if err := repo.Tags.Remove(name); err != nil {
-			return err
-		}
+		repo.Tags.Remove(name)
 		if _, err = repo.Tags.Create(name, cm, tagger, message); err != nil {
 			return err
 		}
