@@ -21,4 +21,4 @@ script:
 - go build
 - git clone https://github.com/JetBrains/intellij-community.git
 - cd intellij-community
-- ../git-fast-reword -date 5d2dfa41c046ce288f1aaddb243aa364aef043db "New message"
+- ../git-fast-reword -date-optimization 5d2dfa41c046ce288f1aaddb243aa364aef043db "New message"
