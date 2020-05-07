@@ -263,12 +263,6 @@ func buildCommitSubgraph(repo *git.Repository, neededCommits []string, dateOptim
 		u[p.id] = true
 	}
 
-	// Create some commits as parents that we will not update(to use hashes as parents value)
-	pp := make(map[string]int)
-	for _, v := range commits {
-		pp[v.id] = len(v.parents)
-	}
-
 	var dfs2 func(*commit)
 	dfs2 = func(c *commit) {
 		if needed[c.id] {
@@ -279,15 +273,9 @@ func buildCommitSubgraph(repo *git.Repository, neededCommits []string, dateOptim
 		}
 		u[c.id] = true
 		for _, v := range c.children {
-			if needed[v.id] {
-				deleteParent(v, c)
-			} else {
-				pp[v.id]--
-				if pp[v.id] == 0 {
-					dfs2(v)
-				} else {
-					deleteParent(v, c)
-				}
+			deleteParent(v, c)
+			if !needed[v.id] && len(v.parents) == 0 {
+				dfs2(v)
 			}
 		}
 	}
