@@ -17,6 +17,17 @@ type rewordParam struct {
 	message string
 }
 
+type logger struct {
+	Verbose bool
+}
+
+func (l *logger) Write(b []byte) (int, error) {
+	if l.Verbose {
+		return fmt.Fprint(os.Stdout, string(b))
+	}
+	return 0, nil
+}
+
 // As program runs inside of a repo, function goes up by a directory tree until it meets .git directory
 func getRepoRoot() (string, error) {
 	wd, err := os.Getwd()
@@ -67,6 +78,9 @@ func main() {
 	headOnlyPtr := flag.Bool("head-only", false,
 		"Reword only commit chain that current HEAD points to. If any rewordable commit is not reachable from HEAD, returns an error",
 	)
+	verbosePtr := flag.Bool("verbose", false,
+		"Verbose logging",
+	)
 	helpPtr := flag.Bool("help", false,
 		"Print this help",
 	)
@@ -80,6 +94,8 @@ func main() {
 		printHelpAndExit()
 	}
 
+	log.SetOutput(&logger{*verbosePtr})
+
 	wd, err := getRepoRoot()
 	if err != nil {
 		exitWithError("error while getting repo root: %s", err.Error())
@@ -90,6 +106,9 @@ func main() {
 	}
 
 	flagOffset := 0
+	if *verbosePtr {
+		flagOffset++
+	}
 	if dateOptimization {
 		flagOffset++
 	}

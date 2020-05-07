@@ -7,8 +7,6 @@ import (
 	git "github.com/libgit2/git2go/v28"
 )
 
-// TODO stress on intellij repo
-
 func relinkBranches(repo *git.Repository, newCommitHash map[string]string, headDetached bool) error {
 	it, err := repo.NewBranchIterator(git.BranchLocal)
 	if err != nil {
@@ -88,6 +86,7 @@ func relinkTags(repo *git.Repository, newCommitHash map[string]string) error {
 			return err
 		}
 	}
+	log.Println("Annotated tags relinked")
 
 	for _, v := range lightweight {
 		ref, err := repo.References.Lookup(v)
@@ -110,6 +109,7 @@ func relinkTags(repo *git.Repository, newCommitHash map[string]string) error {
 			return err
 		}
 	}
+	log.Println("Lightweight tags relinked")
 	return nil
 }
 
@@ -172,7 +172,6 @@ func fastReword(repo *git.Repository, params []rewordParam, dateOptimization, he
 		newCommitHash[v.id] = ocm.Id().String()
 		v.id = ocm.Id().String()
 	}
-
 	log.Println("Relinking branches...")
 	if err = relinkBranches(repo, newCommitHash, g.detachedHead); err != nil {
 		return err
