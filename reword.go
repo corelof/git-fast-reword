@@ -134,7 +134,6 @@ func fastReword(repo *git.Repository, params []rewordParam, dateOptimization, he
 		if !v.needsRebuild {
 			continue
 		}
-		// TODO optimize loop body if needed
 		oid, err := git.NewOid(v.id)
 		if err != nil {
 			return err
